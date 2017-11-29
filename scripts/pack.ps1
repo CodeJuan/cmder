@@ -16,10 +16,10 @@
     Creates default archives for cmder with plenty of information
 .NOTES
     AUTHORS
-    Samuel Vasko, Jack Bennett
+    Samuel Vasko, Jack Bennett, Martin Kemp
     Part of the Cmder project.
 .LINK
-    https://github.com/bliker/cmder - Project Home
+    https://github.com/cmderdev/cmder - Project Home
 #>
 
 [CmdletBinding(SupportsShouldProcess=$true)]
@@ -42,16 +42,17 @@ Ensure-Executable "7z"
 $targets = @{
     "cmder.zip" = $null;
     "cmder.7z" = $null;
-    "cmder_mini.zip" = "-x!`"vendor\msysgit`"";
+    "cmder_mini.zip" = "-x!`"vendor\git-for-windows`"";
 }
 
 Delete-Existing "..\Version*"
+Delete-Existing "..\build\*"
 
 $version = Invoke-Expression "git describe --abbrev=0 --tags"
 (New-Item -ItemType file "$cmderRoot\Version $version") | Out-Null
 
 foreach ($t in $targets.GetEnumerator()) {
     Create-Archive $cmderRoot "$saveTo\$($t.Name)" $t.Value
-    $hash = (Digest-MD5 "$saveTo\$($t.Name)")
-    Add-Content "$saveTo\hashes.txt" $hash
+    $hash = (Digest-Hash "$saveTo\$($t.Name)")
+    Add-Content -path "$saveTo\hashes.txt" -value ($t.Name + ' ' + $hash)
 }

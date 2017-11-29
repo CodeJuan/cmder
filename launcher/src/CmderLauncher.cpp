@@ -4,6 +4,7 @@
 #include "resource.h"
 #include <vector>
 
+
 #pragma comment(lib, "Shlwapi.lib")
 
 #ifndef UNICODE
@@ -18,7 +19,7 @@
 #define SHELL_MENU_REGISTRY_PATH_BACKGROUND L"Directory\\Background\\shell\\Cmder"
 #define SHELL_MENU_REGISTRY_PATH_LISTITEM L"Directory\\shell\\Cmder"
 
-#define streqi(a, b) (_wcsicmp((a), (b)) == 0) 
+#define streqi(a, b) (_wcsicmp((a), (b)) == 0)
 
 #define WIDEN2(x) L ## x
 #define WIDEN(x) WIDEN2(x)
@@ -29,7 +30,7 @@
 void ShowErrorAndExit(DWORD ec, const wchar_t * func, int line)
 {
 	wchar_t * buffer;
-	if (FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, 
+	if (FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
 		NULL, ec, 0, (LPWSTR) &buffer, 0, NULL) == 0)
 	{
 		buffer = L"Unknown error. FormatMessage failed.";
@@ -63,10 +64,12 @@ optpair GetOption()
 
 	if (argc == 1)
 	{
+		// no commandline argument...
 		pair = optpair(L"/START", L"");
 	}
 	else if (argc == 2 && argv[1][0] != L'/')
 	{
+		// only a single argument: this should be a path...
 		pair = optpair(L"/START", argv[1]);
 	}
 	else
@@ -79,7 +82,20 @@ optpair GetOption()
 	return pair;
 }
 
-void StartCmder(std::wstring path)
+bool FileExists(const wchar_t * filePath)
+{
+	HANDLE hFile = CreateFile(filePath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+
+	if (hFile != INVALID_HANDLE_VALUE)
+	{
+		CloseHandle(hFile);
+		return true;
+	}
+
+	return false;
+}
+
+void StartCmder(std::wstring path, bool is_single_mode, std::wstring taskName = L"")
 {
 #if USE_TASKBAR_API
 	wchar_t appId[MAX_PATH] = { 0 };
@@ -87,6 +103,10 @@ void StartCmder(std::wstring path)
 	wchar_t exeDir[MAX_PATH] = { 0 };
 	wchar_t icoPath[MAX_PATH] = { 0 };
 	wchar_t cfgPath[MAX_PATH] = { 0 };
+	wchar_t backupCfgPath[MAX_PATH] = { 0 };
+	wchar_t cpuCfgPath[MAX_PATH] = { 0 };
+	wchar_t userCfgPath[MAX_PATH] = { 0 };
+	wchar_t oldCfgPath[MAX_PATH] = { 0 };
 	wchar_t conEmuPath[MAX_PATH] = { 0 };
 	wchar_t args[MAX_PATH * 2 + 256] = { 0 };
 
@@ -99,13 +119,80 @@ void StartCmder(std::wstring path)
 	PathRemoveFileSpec(exeDir);
 
 	PathCombine(icoPath, exeDir, L"icons\\cmder.ico");
-	PathCombine(cfgPath, exeDir, L"config\\ConEmu.xml");
-	PathCombine(conEmuPath, exeDir, L"vendor\\conemu-maximus5\\ConEmu.exe");
 
-	swprintf_s(args, L"/Icon \"%s\" /Title Cmder /LoadCfgFile \"%s\"", icoPath, cfgPath);
+	// Check for machine-specific then user config source file.
+	PathCombine(cpuCfgPath, exeDir, L"config\\ConEmu-%COMPUTERNAME%.xml");
+	ExpandEnvironmentStrings(cpuCfgPath, cpuCfgPath, sizeof(cpuCfgPath) / sizeof(cpuCfgPath[0]));
+
+	PathCombine(userCfgPath, exeDir, L"config\\user-ConEmu.xml");
+ 
+	if (PathFileExists(cpuCfgPath)) {
+		wcsncpy_s(oldCfgPath, cpuCfgPath, sizeof(cpuCfgPath));
+		wcsncpy_s(backupCfgPath, cpuCfgPath, sizeof(cpuCfgPath));
+	}
+	else if (PathFileExists(userCfgPath)) {
+		wcsncpy_s(oldCfgPath, userCfgPath,sizeof(userCfgPath));
+		wcsncpy_s(backupCfgPath, userCfgPath, sizeof(userCfgPath));
+	}
+	else {
+		PathCombine(oldCfgPath, exeDir, L"config\\ConEmu.xml");
+		wcsncpy_s(backupCfgPath, userCfgPath, sizeof(userCfgPath));
+	}
+
+	// Set path to vendored ConEmu config file
+	PathCombine(cfgPath, exeDir, L"vendor\\conemu-maximus5\\ConEmu.xml");
+
+	SYSTEM_INFO sysInfo;
+	GetNativeSystemInfo(&sysInfo);
+	if (sysInfo.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_AMD64) {
+		PathCombine(conEmuPath, exeDir, L"vendor\\conemu-maximus5\\ConEmu64.exe");
+	}
+	else {
+		PathCombine(conEmuPath, exeDir, L"vendor\\conemu-maximus5\\ConEmu.exe");
+	}
+
+	if (FileExists(oldCfgPath) && !FileExists(cfgPath))
+	{
+		if (!CopyFile(oldCfgPath, cfgPath, FALSE))
+		{
+			MessageBox(NULL,
+				(GetLastError() == ERROR_ACCESS_DENIED)
+				? L"Failed to copy ConEmu.xml file to new location! Restart cmder as administrator."
+				: L"Failed to copy ConEmu.xml file to new location!", MB_TITLE, MB_ICONSTOP);
+			exit(1);
+		}
+	}
+	else if (!CopyFile(cfgPath, backupCfgPath, FALSE))
+	{
+		MessageBox(NULL,
+			(GetLastError() == ERROR_ACCESS_DENIED)
+			? L"Failed to backup ConEmu.xml file to ./config folder!"
+			: L"Failed to backup ConEmu.xml file to ./config folder!", MB_TITLE, MB_ICONSTOP);
+		exit(1);
+	}
+
+	if (is_single_mode)
+	{
+		swprintf_s(args, L"/single /Icon \"%s\" /Title Cmder", icoPath);
+	}
+	else
+	{
+		swprintf_s(args, L"/Icon \"%s\" /Title Cmder", icoPath);
+	}
+
+	if (!taskName.empty()) {
+		swprintf_s(args, L"%s /run {%s}", args, taskName.c_str());
+	}
 
 	SetEnvironmentVariable(L"CMDER_ROOT", exeDir);
-	SetEnvironmentVariable(L"CMDER_START", path.c_str());
+	if (!streqi(path.c_str(), L""))
+	{
+		if (!SetEnvironmentVariable(L"CMDER_START", path.c_str())) {
+			MessageBox(NULL, _T("Error trying to set CMDER_START to given path!"), _T("Error"), MB_OK);
+		}
+	}
+	// Ensure EnvironmentVariables are propagated.
+
 
 	STARTUPINFO si = { 0 };
 	si.cb = sizeof(STARTUPINFO);
@@ -113,10 +200,15 @@ void StartCmder(std::wstring path)
 	si.lpTitle = appId;
 	si.dwFlags = STARTF_TITLEISAPPID;
 #endif
-
 	PROCESS_INFORMATION pi;
+	if (!CreateProcess(conEmuPath, args, NULL, NULL, false, 0, NULL, NULL, &si, &pi)) {
+		MessageBox(NULL, _T("Unable to create the ConEmu Process!"), _T("Error"), MB_OK);
+		return;
+	}
 
-	CreateProcess(conEmuPath, args, NULL, NULL, false, 0, NULL, NULL, &si, &pi);
+	LRESULT lr = SendMessageTimeout(HWND_BROADCAST, WM_SETTINGCHANGE, 0, (LPARAM)"Environment", SMTO_ABORTIFHUNG | SMTO_NOTIMEOUTIFNOTHUNG, 5000, NULL);
+	lr = SendMessageTimeout(HWND_BROADCAST, WM_SETTINGCHANGE, 0, (LPARAM) L"Environment", SMTO_ABORTIFHUNG | SMTO_NOTIMEOUTIFNOTHUNG, 5000, NULL); // For Windows >= 8
+
 }
 
 bool IsUserOnly(std::wstring opt)
@@ -229,7 +321,15 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 
 	if (streqi(opt.first.c_str(), L"/START"))
 	{
-		StartCmder(opt.second);
+		StartCmder(opt.second, false);
+	}
+	else if (streqi(opt.first.c_str(), L"/SINGLE"))
+	{
+		StartCmder(opt.second, true);
+	}
+	else if (streqi(opt.first.c_str(), L"/TASK"))
+	{
+		StartCmder(L"", false, opt.second);
 	}
 	else if (streqi(opt.first.c_str(), L"/REGISTER"))
 	{
@@ -243,7 +343,7 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 	}
 	else
 	{
-		MessageBox(NULL, L"Unrecognized parameter.\n\nValid options:\n  /START <path>\n  /REGISTER [USER/ALL]\n  /UNREGISTER [USER/ALL]", MB_TITLE, MB_OK);
+		MessageBox(NULL, L"Unrecognized parameter.\n\nValid options:\n  /START <path>\n  /SINGLE <path>\n  /TASK <name>\n /REGISTER [USER/ALL]\n  /UNREGISTER [USER/ALL]", MB_TITLE, MB_OK);
 		return 1;
 	}
 
